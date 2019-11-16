@@ -1,3 +1,6 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -6,6 +9,8 @@
 {-# LANGUAGE TypeOperators #-}
 module CEK where
 
+import Control.Monad
+import Control.Applicative
 import Data.List hiding ((\\))
 import Data.Maybe
 
@@ -216,7 +221,7 @@ interleave :: [a] -> [a] -> [a]
 interleave [] as = as
 interleave (x : xs) as = x : interleave as xs 
 
-termsOfType :: (Enum o, Enum a, Bounded v, Enum v) => [a] -> Type -> [C o v a]
+termsOfType :: (Eq o, Eq v, Eq a, Enum o, Enum a, Bounded v, Enum v) => [a] -> Type -> [C o v a]
 termsOfType free ty = go free [] ty where
   go _ vars Primitive = interleave [ Val v | v <- [minBound..maxBound]  ] 
                                    [ Var v | v <- vars ]
@@ -241,7 +246,7 @@ wellTypedTest t = (== 1) . length . group . take 10000
                 $ [ isJust $ typecheck [] c | c :: TestTerm <- termsOfType [1..] t ]
 
 manyTypes :: [Type]
-manyTypes = interleave (go True) (go False) where
+manyTypes = nub $ interleave (go True) (go False) where
   go :: Bool -> [Type]
   go b = [Primitive] ++ do
     x <- manyTypes
@@ -253,8 +258,8 @@ wellTypedTests = all wellTypedTest $ take 10 manyTypes
 
 wellTypedTermsTerminate :: Bool
 wellTypedTermsTerminate = all (not . errorState) $ do
-  t <- take 1000 manyTypes
-  term :: TestTerm <- take 1000 $ termsOfType [1..] t
+  t <- take 10 manyTypes
+  term :: TestTerm <- take 10 $ termsOfType [1..] t
   return . eval . start $ term 
 
 tests :: Bool
@@ -269,6 +274,62 @@ tests = and
   , appTests ]
 
 -- $> tests
+
+-- maybe write a parser for the lambda calculus?
+newtype Parser a = Parser { runParser :: String -> [(String, a)] }
+  deriving Functor
+
+instance Applicative Parser where
+  (<*>) = ap
+  pure a = Parser \s -> [(s, a)]
+
+instance Monad Parser where
+  Parser f >>= g = Parser \s -> do
+    (s', a) <- f s
+    runParser (g a) s'
+
+instance Alternative Parser where
+  Parser f <|> Parser g = Parser \s -> f s <|> g s
+  empty = Parser $ const []
+
+char :: Parser Char
+char = Parser \case
+  x : xs -> [(xs, x)]
+  [] -> []
+
+filterP :: (a -> Bool) -> Parser a -> Parser a
+filterP p (Parser f) = Parser \s -> filter (p . snd) $ f s
+
+parser :: Parser o -> Parser v -> Parser a -> Parser (C o v a)
+parser o v a = lambda <|> primOp <|> (Val <$> v) <|> (Var <$> a) <|> app where
+  ty = primitive <|> fun where
+    primitive :: Parser Type
+    primitive = filterP (== '*') char >> return Primitive
+    fun  = do
+      t <- parensAllowed ty  
+      void $ filterP (== '-') char 
+      void $ filterP (== '>') char 
+      t' <- parensAllowed ty 
+      return (Function t t')
+  lambda = do
+    void $ filterP (== '\\') char
+    var <- a
+    void $ filterP (== ':') char
+    t <- ty
+    void $ filterP (== '.') char
+    b <- parser o v a
+    return $ Lam var (Just t) b  
+  parensAllowed p = filterP (== '(') char *> p <* filterP (== ')') char
+  primOp = do
+    x <- parensAllowed (parser o v a)
+    op <- o
+    y <- parensAllowed (parser o v a)
+    return (Prim op x y)
+  app = do
+    x <- parser o v a
+    void $ filterP (== ' ') char
+    y <- parser o v a
+    return (Ap x y)
 
 deriving instance (Show o, Show v, Show a) => Show (State o v a)
 deriving instance (Eq o, Eq v, Eq a) => Eq (State o v a)
