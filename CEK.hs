@@ -10,6 +10,7 @@
 module CEK where
 
 import Control.Monad
+import Data.Char
 import Control.Applicative
 import Data.List hiding ((\\))
 import Data.Maybe
@@ -300,26 +301,29 @@ char = Parser \case
 filterP :: (a -> Bool) -> Parser a -> Parser a
 filterP p (Parser f) = Parser \s -> filter (p . snd) $ f s
 
+see_ :: Char -> Parser ()
+see_ c = void $ filterP (== c) char
+
 parser :: Parser o -> Parser v -> Parser a -> Parser (C o v a)
 parser o v a = lambda <|> primOp <|> (Val <$> v) <|> (Var <$> a) <|> app where
-  ty = primitive <|> fun where
+  ty = fun <|> primitive where
     primitive :: Parser Type
-    primitive = filterP (== '*') char >> return Primitive
+    primitive = see_ '*' >> return Primitive
     fun  = do
       t <- parensAllowed ty  
-      void $ filterP (== '-') char 
-      void $ filterP (== '>') char 
+      see_ '-' 
+      see_ '>'
       t' <- parensAllowed ty 
       return (Function t t')
   lambda = do
-    void $ filterP (== '\\') char
+    see_ '\\'
     var <- a
-    void $ filterP (== ':') char
+    see_ ':'
     t <- ty
-    void $ filterP (== '.') char
+    see_ '.'
     b <- parser o v a
     return $ Lam var (Just t) b  
-  parensAllowed p = filterP (== '(') char *> p <* filterP (== ')') char
+  parensAllowed p = see_ '(' *> p <* see_ ')'
   primOp = do
     x <- parensAllowed (parser o v a)
     op <- o
@@ -327,9 +331,24 @@ parser o v a = lambda <|> primOp <|> (Val <$> v) <|> (Var <$> a) <|> app where
     return (Prim op x y)
   app = do
     x <- parser o v a
-    void $ filterP (== ' ') char
+    see_ ' '
     y <- parser o v a
     return (Ap x y)
+
+while :: (Char -> Bool) -> Parser String
+while p = Parser \xs -> [span p xs]
+
+testTermParser :: Parser TestTerm
+testTermParser = parser opCode vals vars where
+  opCode = (Add <$ see_ '+') 
+       <|> (Mul <$ see_ '*')
+       <|> (Mod <$ see_ '%')
+       <|> (Div <$ see_ '/')
+       <|> (Sub <$ see_ '-')
+  vals = read <$> while isNumber
+  vars = see_ '?' >> (read <$> while isNumber)
+
+-- $> runParser testTermParser "100"
 
 deriving instance (Show o, Show v, Show a) => Show (State o v a)
 deriving instance (Eq o, Eq v, Eq a) => Eq (State o v a)
