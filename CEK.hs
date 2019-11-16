@@ -251,9 +251,16 @@ manyTypes = interleave (go True) (go False) where
 wellTypedTests :: Bool
 wellTypedTests = all wellTypedTest $ take 10 manyTypes
 
+wellTypedTermsTerminate :: Bool
+wellTypedTermsTerminate = all (not . errorState) $ do
+  t <- take 1000 manyTypes
+  term :: TestTerm <- take 1000 $ termsOfType [1..] t
+  return . eval . start $ term 
+
 tests :: Bool
 tests = and 
-  [ wellTypedTests
+  [ wellTypedTermsTerminate
+  , wellTypedTests
   , addTests
   , addConstTests
   , constIdTests
