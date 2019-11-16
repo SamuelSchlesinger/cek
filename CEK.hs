@@ -1,8 +1,13 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeOperators #-}
 module CEK where
+
+import Data.List hiding ((\\))
+import Data.Maybe
 
 data C o v a 
   = Ap (C o v a) (C o v a)
@@ -110,9 +115,9 @@ stripTypes (Prim o a b) = Prim o (stripTypes a) (stripTypes b)
 stripTypes v = v
 
 data OpCode = Add | Sub | Mul | Mod | Div | Exp
-  deriving (Eq, Show)
+  deriving (Eq, Show, Enum, Bounded)
 
-instance Prim OpCode Integer where
+instance Integral n => Prim OpCode n where
   prim Add = (+)
   prim Sub = (-)
   prim Mul = (*)
@@ -120,7 +125,7 @@ instance Prim OpCode Integer where
   prim Div = div
   prim Exp = (^)
 
-type TestTerm = C OpCode Integer Integer
+type TestTerm = C OpCode Int Int
 
 id_ :: TestTerm
 id_ = Lam 0 (Just Primitive) (Var 0)
@@ -143,50 +148,62 @@ two_ = Val 2
 three_ :: TestTerm
 three_ = Val 3
 
+add2_ :: TestTerm
+add2_ = Lam 0 (Just Primitive) $ Lam 1 (Just Primitive) $ Prim Add (Var 0) (Var 1)
+
+mul2_ :: TestTerm
+mul2_ = Lam 0 (Just Primitive) $ Lam 1 (Just Primitive) $ Prim Mul (Var 0) (Var 1)
+
 terms :: [TestTerm]
-terms = [s_, app_, const_, id_, one_, two_, three_]
+terms = [s_, app_, const_, id_, one_, two_, three_, add2_, mul2_]
 
 appTest :: TestTerm -> TestTerm -> Bool
 appTest f x = if s == s' then True else False where
   s = normalize $ Ap (Ap app_ f) x 
   s' = normalize $ Ap f x
 
--- > and [ appTest f x | f <- terms, x <- terms ]
+appTests :: Bool
+appTests = and [ appTest f x | f <- terms, x <- terms ]
 
 idTest :: TestTerm -> Bool
 idTest t = if s == s' then True else False where 
   s  = normalize $ Ap id_ t 
   s' = normalize $ t
 
--- > and [ idTest t | t <- terms ]
+idTests :: Bool
+idTests = and [ idTest t | t <- terms ]
 
 constTest :: TestTerm -> TestTerm -> Bool
 constTest c a = if s == s' then True else False where
   s = normalize $ Ap (Ap const_ c) a
   s' = normalize $ c
 
--- > and [ constTest c a | c <- terms, a <- terms  ]
+constTests :: Bool
+constTests = and [ constTest c a | c <- terms, a <- terms  ]
 
 constIdTest :: TestTerm -> TestTerm -> Bool
 constIdTest c a = if s == s' then True else False where
   s = normalize $ Ap (Ap (Ap const_ id_) c) a
   s' = normalize $ Ap id_ a
 
--- > and [ constIdTest c a | c <- terms, a <- terms ]
+constIdTests :: Bool
+constIdTests = and [ constIdTest c a | c <- terms, a <- terms ]
 
 addTest :: TestTerm -> TestTerm -> Bool
 addTest c a = if s == s' then True else False where
   s = normalize $ Prim Add c a
   s' = normalize $ Prim Add a c
 
--- > and [ addTest c a | c <- terms, a <- terms ]
+addTests :: Bool
+addTests = and [ addTest c a | c <- terms, a <- terms ]
 
 addConstTest :: TestTerm -> TestTerm -> Bool
 addConstTest c a = if s == s' then True else False where
   s = normalize $ Prim Add c a
   s' = normalize $ Prim Add (Ap (Ap const_ a) one_) c
 
--- > and [ addConstTest c a | c <- terms, a <- terms ]
+addConstTests :: Bool
+addConstTests = and [ addConstTest c a | c <- terms, a <- terms ]
 
 -- now, we can make a typechecker for this!
 
@@ -194,6 +211,17 @@ data Type
   = Primitive
   | Function Type Type
   deriving (Show, Eq)
+
+interleave :: [a] -> [a] -> [a]
+interleave [] as = as
+interleave (x : xs) as = x : interleave as xs 
+
+termsOfType :: (Enum o, Enum a, Bounded v, Enum v) => [a] -> Type -> [C o v a]
+termsOfType free ty = go free [] ty where
+  go _ vars Primitive = interleave [ Val v | v <- [minBound..maxBound]  ] 
+                                   [ Var v | v <- vars ]
+  go (a : as) vars (Function t t') = [ Lam a (Just t) b | b <- go as (a : vars) t' ]
+  go [] _ (Function _ _) = error "ran out of free variables"
 
 typecheck :: Eq a => [(a, Type)] -> C o v a -> Maybe Type
 typecheck _       (Val _) = Just Primitive
@@ -208,10 +236,32 @@ typecheck context (Lam x (Just s) e) = do
 typecheck _ (Lam _ Nothing _) = error "do not support leaving out type signature at abstraction sites"
 typecheck _ (Prim _ _ _) = Just Primitive
 
-add2_ :: TestTerm
-add2_ = Lam 0 (Just Primitive) $ Lam 1 (Just Primitive) $ Prim Add (Var 0) (Var 1)
+wellTypedTest :: Type -> Bool
+wellTypedTest t = (== 1) . length . group . take 10000 
+                $ [ isJust $ typecheck [] c | c :: TestTerm <- termsOfType [1..] t ]
 
--- $> typecheck [] add2_ 
+manyTypes :: [Type]
+manyTypes = interleave (go True) (go False) where
+  go :: Bool -> [Type]
+  go b = [Primitive] ++ do
+    x <- manyTypes
+    y <- manyTypes
+    return $ if b then Function x y else Function y x 
+
+wellTypedTests :: Bool
+wellTypedTests = all wellTypedTest $ take 10 manyTypes
+
+tests :: Bool
+tests = and 
+  [ wellTypedTests
+  , addTests
+  , addConstTests
+  , constIdTests
+  , constTests
+  , idTests
+  , appTests ]
+
+-- $> tests
 
 deriving instance (Show o, Show v, Show a) => Show (State o v a)
 deriving instance (Eq o, Eq v, Eq a) => Eq (State o v a)
