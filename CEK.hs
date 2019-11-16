@@ -15,6 +15,21 @@ data E o v a
   = E o v a :+ (a, Value o v a)
   | Nil
 
+subst :: Eq a => E o v a -> C o v a -> C o v a
+subst env (Ap f x) = Ap (subst env f) (subst env x)
+subst env (Lam a t b) = Lam a t (subst (env \\ a) b)
+subst env (Var a) = maybe (Var a) fromValue $ lookupE env a where
+  fromValue :: Eq a => Value o v a -> C o v a
+  fromValue (PrimVal v) = Val v
+  fromValue (Closure a' env' c) = Lam a' Nothing (subst env' c)
+subst _ (Val n) = Val n
+subst env (Prim o x y) = Prim o (subst env x) (subst env y)
+
+(\\) :: Eq a => E o v a -> a -> E o v a
+(e :+ (a, v)) \\ a' | a == a' = e \\ a'
+                    | otherwise = e \\ a' :+ (a, v)
+Nil \\ _ = Nil
+
 lookupE :: Eq a => E o v a -> a -> Maybe (Value o v a)
 lookupE (xs :+ (x, y)) x' | x == x'   = Just y
                           | otherwise = lookupE xs x'
@@ -51,14 +66,16 @@ step (State (Var a) e k)
       Nothing -> FailedLookup a
 step s@(State (Lam a t c) e k)
   = case k of
-      Top            -> s
+      Top            -> case e of
+        Nil -> s 
+        _   -> State (Lam a t (subst (e \\ a) c)) Nil k
       Arg e' c' k'   -> State c' e' (Fun a c e k')
       PrimArg o _ _ _ -> BadPrim o (Lam a t c)
       PrimFun o _ _ _  -> BadPrimFun o (Lam a t c)
       Fun a' c' e' k' -> State c' (e' :+ (a', Closure a e c)) k'
-step s@(State (Val n) _ k)
+step (State (Val n) _ k)
   = case k of
-      Top            -> s
+      Top            -> State (Val n) Nil Top
       Arg _ _ _      -> BadApplication (Val n)
       PrimArg o e' c' k' -> State c' e' (PrimFun o n e' k')
       PrimFun o n' e' k' -> State (Val (prim o n' n)) e' k'
@@ -70,19 +87,18 @@ step (State (Prim opCode a b) e k)
 step s | errorState s = s
        | otherwise    = error "The impossible happened!"
 
-eval :: (Eq a, Prim o v, Show a, Show o, Show v) => State o v a -> State o v a
+eval :: (Eq a, Prim o v) => State o v a -> State o v a
 eval = until final step
 
-final :: (Show a, Eq a) => State o v a -> Bool
-final (State Lam{} _ Top) = True
-final (State Val{}  _ Top) = True
-final s | errorState s    = True
-final _                   = False
+final :: Eq a => State o v a -> Bool
+final (State Lam{} Nil Top) = True
+final (State Val{} Nil Top) = True
+final s = errorState s
 
 start :: C o v a -> State o v a
 start c = State c Nil Top
 
-normalize :: (Prim o v, Show a, Show o, Show v, Eq a) => C o v a -> Maybe (C o v a)
+normalize :: (Prim o v, Eq a) => C o v a -> Maybe (C o v a)
 normalize c = case eval $ start c of
   State c' _ _ -> Just $ stripTypes c'
   _ -> Nothing
@@ -93,13 +109,16 @@ stripTypes (Ap f x) = Ap (stripTypes f) (stripTypes x)
 stripTypes (Prim o a b) = Prim o (stripTypes a) (stripTypes b)
 stripTypes v = v
 
-data OpCode = Add | Sub | Mul
+data OpCode = Add | Sub | Mul | Mod | Div | Exp
   deriving (Eq, Show)
 
 instance Prim OpCode Integer where
   prim Add = (+)
   prim Sub = (-)
   prim Mul = (*)
+  prim Mod = mod
+  prim Div = div
+  prim Exp = (^)
 
 type TestTerm = C OpCode Integer Integer
 
