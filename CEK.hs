@@ -48,11 +48,11 @@ lookupE :: Eq a => E o v a -> a -> Maybe (Value o v a)
 lookupE = flip lookup
                
 data K o v a 
-         = Arg (E o v a) (C o v a) (K o v a)
-         | Top
-         | Fun a (C o v a) (E o v a) (K o v a)
-         | PrimArg o (E o v a) (C o v a) (K o v a)
-         | PrimFun o v (E o v a) (K o v a)
+  = Arg (E o v a) (C o v a) (K o v a)
+  | Top
+  | Fun a (C o v a) (E o v a) (K o v a)
+  | PrimArg o (E o v a) (C o v a) (K o v a)
+  | PrimFun o v (E o v a) (K o v a)
 
 data State o v a 
   = State (C o v a) (E o v a) (K o v a)
@@ -85,19 +85,23 @@ step s@(State (Lam a t c) e k)
       PrimArg o _ _ _ -> BadPrim o (Lam a t c)
       PrimFun o _ _ _  -> BadPrimFun o (Lam a t c)
       Fun a' c' e' k' -> State c' ((a', Closure a e c) : e') k'
-step (State (Val n) _ k)
+step (State (Val n) e k)
   = case k of
       Top            -> State (Val n) [] Top
       Arg _ _ _      -> BadApplication (Val n)
-      PrimArg o e' c' k' -> State c' e' (PrimFun o n e' k')
+      PrimArg o e' c' k' -> State c' e' (PrimFun o n e k')
       PrimFun o n' e' k' -> State (Val (prim o n' n)) e' k'
       Fun x c' e' k' -> State c' ((x, PrimVal n) : e') k'
 step (State (Ap f x) e k)
   = State f e (Arg e x k)
 step (State (Prim opCode a b) e k)
   = State a e (PrimArg opCode e b k)
+-- I derived this by the identity (Ap (Lam a t b) x) ~ Let a x b.
+-- It is also kind of clear from what the Fun continuation means,
+-- but I constantly get this stuff wrong so I wanted to do it this
+-- way. I love having such a strenuous test suite. 
 step (State (Let a x b) e k)
-  = State x e (Fun a b e k)
+  = State x e (Fun a b e k) 
 step s | errorState s = s
        | otherwise    = error "The impossible happened!"
 
@@ -238,11 +242,12 @@ interleave (x : xs) as = x : interleave as xs
 -- doesn't include let expressions
 termsOfType :: (Eq o, Eq v, Eq a, Enum o, Enum a, Bounded v, Enum v) => [a] -> Type -> [C o v a]
 termsOfType free ty = go free [] ty where
-  go _ vars Primitive = [ Val v | v <- [minBound..maxBound]  ] 
-           `interleave` [ Var v | v <- map fst $ filter ((== Primitive) . snd) vars ]
+  go as vars Primitive = [ Val v  | v <- [minBound..maxBound]  ] 
+            `interleave` [ Var v  | v <- map fst $ filter ((== Primitive) . snd) vars ]
+            `interleave` [ Ap f x | t <- manyTypes, f <- termsOfType as (Function t Primitive), x <- termsOfType as t ]
   go (a : as) vars (Function t t') = [ Lam a (Just t) b | b <- go as ((a, t) : vars) t' ]
                         `interleave` [ Var v | v <- map fst $ filter ((== Function t t') . snd) vars ]
-  go [] _ (Function _ _) = error "ran out of free variables"
+  go [] _ _ = error "ran out of free variables"
 
 typecheck :: Eq a => [(a, Type)] -> C o v a -> Maybe Type
 typecheck _       (Val _) = Just Primitive
@@ -254,15 +259,19 @@ typecheck context (Ap f x) = do
 typecheck context (Lam x (Just s) e) = do
   t <- typecheck ((x, s) : context) e
   return (Function s t)
-typecheck _ (Lam _ Nothing _) = error "do not support leaving out type signature at abstraction sites"
+typecheck _ (Lam _ Nothing _) 
+  = error "typechecking does not support leaving out type signature at abstraction sites"
 typecheck _ (Prim _ _ _) = Just Primitive
 typecheck context (Let a x b) = do
   xt <- typecheck context x
   bt <- typecheck ((a, xt) : context) b
   return bt
 
+n_ :: Int
+n_ = 100
+
 wellTypedTest :: Type -> Bool
-wellTypedTest t = (== 1) . length . group . take 100 
+wellTypedTest t = (== 1) . length . group . take n_ 
                 $ [ fromJust $ typecheck [] c | c :: TestTerm <- termsOfType [1..] t ]
 
 manyTypes :: [Type]
@@ -274,18 +283,18 @@ manyTypes = nub $ interleave (go True) (go False) where
     return $ if b then Function x y else Function y x 
 
 wellTypedTests :: Bool
-wellTypedTests = all wellTypedTest $ take 100 manyTypes
+wellTypedTests = all wellTypedTest $ take n_ manyTypes
 
 termsOfTypeTest :: Bool
 termsOfTypeTest = and $ do
-  t <- take 100 manyTypes
-  term :: TestTerm <- take 100 $ termsOfType [1..] t
+  t <- take n_ manyTypes
+  term :: TestTerm <- take n_ $ termsOfType [1..] t
   pure $ if typecheck [] term == Just t then True else False
 
 wellTypedTermsTerminate :: Bool
 wellTypedTermsTerminate = all (not . errorState) $ do
-  t <- take 100 manyTypes
-  term :: TestTerm <- take 100 $ termsOfType [1..] t
+  t <- take n_ manyTypes
+  term :: TestTerm <- take n_ $ termsOfType [1..] t
   return . eval . start $ term
 
 simpleLetTest :: TestTerm -> Bool
@@ -295,14 +304,14 @@ simpleLetTest a = s == s' && not (errorState s || errorState s') where
 
 simpleLetTests :: Bool
 simpleLetTests = and $ do
-  x <- take 100 manyTypes
-  t <- take 100 $ termsOfType [1..] x
+  x <- take n_ manyTypes
+  t <- take n_ $ termsOfType [1..] x
   return $ simpleLetTest t
 
 testRewriteRule :: (TestTerm -> TestTerm) -> Bool
 testRewriteRule rule = and $ do
-  x <- take 100 manyTypes
-  t :: TestTerm <- take 100 $ termsOfType [1..] x
+  x <- take n_ manyTypes
+  t :: TestTerm <- take n_ $ termsOfType [1..] x
   let s = exec t
   let s' = exec $ rule t
   let mtt = typecheck [] t
