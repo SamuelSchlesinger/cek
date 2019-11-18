@@ -281,6 +281,7 @@ wellTypedTermsTerminate = all (not . errorState) $ do
 tests :: Bool
 tests = and 
   [ wellTypedTermsTerminate
+  , termsOfTypeTest
   , wellTypedTests
   , addTests
   , addConstTests
