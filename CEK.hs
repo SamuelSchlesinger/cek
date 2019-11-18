@@ -9,6 +9,7 @@
 {-# LANGUAGE TypeOperators #-}
 module CEK where
 
+import Debug.Trace
 import Data.List hiding ((\\))
 import Data.Maybe
 
@@ -111,6 +112,12 @@ normalize c = case eval $ start c of
   State c' _ _ -> Just $ stripTypes c'
   _ -> Nothing
 
+exec :: (Prim o v, Eq a) => C o v a -> State o v a
+exec = help . eval . start where
+  help = \case
+    State a b c -> State (stripTypes a) b c
+    s -> s
+
 stripTypes :: C o v a -> C o v a
 stripTypes (Lam x _ e) = Lam x Nothing e
 stripTypes (Ap f x) = Ap (stripTypes f) (stripTypes x)
@@ -162,51 +169,55 @@ terms = [s_, app_, const_, id_, one_, two_, three_, add2_, mul2_]
 
 appTest :: TestTerm -> TestTerm -> Bool
 appTest f x = if s == s' then True else False where
-  s = normalize $ Ap (Ap app_ f) x 
-  s' = normalize $ Ap f x
+  s = exec $ Ap (Ap app_ f) x 
+  s' = exec $ Ap f x
 
 appTests :: Bool
 appTests = and [ appTest f x | f <- terms, x <- terms ]
 
 idTest :: TestTerm -> Bool
 idTest t = if s == s' then True else False where 
-  s  = normalize $ Ap id_ t 
-  s' = normalize $ t
+  s  = exec $ Ap id_ t 
+  s' = exec $ t
 
 idTests :: Bool
 idTests = and [ idTest t | t <- terms ]
 
 constTest :: TestTerm -> TestTerm -> Bool
 constTest c a = if s == s' then True else False where
-  s = normalize $ Ap (Ap const_ c) a
-  s' = normalize $ c
+  s = exec $ Ap (Ap const_ c) a
+  s' = exec $ c
 
 constTests :: Bool
 constTests = and [ constTest c a | c <- terms, a <- terms  ]
 
 constIdTest :: TestTerm -> TestTerm -> Bool
-constIdTest c a = if s == s' then True else False where
-  s = normalize $ Ap (Ap (Ap const_ id_) c) a
-  s' = normalize $ Ap id_ a
+constIdTest c a = if s == s' && s' == s'' then True else False where
+  s = exec $ Ap (Ap (Ap const_ id_) c) a
+  s' = exec $ Ap id_ a
+  s'' = exec a
 
 constIdTests :: Bool
 constIdTests = and [ constIdTest c a | c <- terms, a <- terms ]
 
+numberTerms :: [TestTerm]
+numberTerms = [one_, two_, three_]
+
 addTest :: TestTerm -> TestTerm -> Bool
 addTest c a = if s == s' then True else False where
-  s = normalize $ Prim Add c a
-  s' = normalize $ Prim Add a c
+  s = exec $ Prim Add c a
+  s' = exec $ Prim Add a c
 
 addTests :: Bool
-addTests = and [ addTest c a | c <- terms, a <- terms ]
+addTests = and [ addTest c a | c <- numberTerms, a <- numberTerms ]
 
 addConstTest :: TestTerm -> TestTerm -> Bool
 addConstTest c a = if s == s' then True else False where
-  s = normalize $ Prim Add c a
-  s' = normalize $ Prim Add (Ap (Ap const_ a) one_) c
+  s = exec $ Prim Add c a
+  s' = exec $ Prim Add (Ap (Ap const_ c) one_) a
 
 addConstTests :: Bool
-addConstTests = and [ addConstTest c a | c <- terms, a <- terms ]
+addConstTests = and [ addConstTest c a | c <- numberTerms, a <- numberTerms ]
 
 -- now, we can make a typechecker for this!
 
@@ -222,8 +233,9 @@ interleave (x : xs) as = x : interleave as xs
 termsOfType :: (Eq o, Eq v, Eq a, Enum o, Enum a, Bounded v, Enum v) => [a] -> Type -> [C o v a]
 termsOfType free ty = go free [] ty where
   go _ vars Primitive = interleave [ Val v | v <- [minBound..maxBound]  ] 
-                                   [ Var v | v <- vars ]
-  go (a : as) vars (Function t t') = [ Lam a (Just t) b | b <- go as (a : vars) t' ]
+                                   [ Var v | v <- map fst $ filter ((== Primitive) . snd) vars ]
+  go (a : as) vars (Function t t') = [ Lam a (Just t) b | b <- go as ((a, t) : vars) t' ]
+                        `interleave` [ Var v | v <- map fst $ filter ((== Function t t') . snd) vars ]
   go [] _ (Function _ _) = error "ran out of free variables"
 
 typecheck :: Eq a => [(a, Type)] -> C o v a -> Maybe Type
@@ -253,6 +265,12 @@ manyTypes = nub $ interleave (go True) (go False) where
 
 wellTypedTests :: Bool
 wellTypedTests = all wellTypedTest $ take 10 manyTypes
+
+termsOfTypeTest :: Bool
+termsOfTypeTest = and $ do
+  t <- take 1000 manyTypes
+  term :: TestTerm <- take 1000 $ termsOfType [1..] t
+  pure $ if typecheck [] term == Just t then True else False
 
 wellTypedTermsTerminate :: Bool
 wellTypedTermsTerminate = all (not . errorState) $ do
